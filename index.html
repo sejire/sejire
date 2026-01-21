@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sejire - Шежире</title>
+    <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gun/sea.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        :root { --primary: #27ae60; --error: #e74c3c; --bg: #f4f7f6; }
+        body { font-family: sans-serif; background: var(--bg); margin: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+       
+        /* Экран входа */
+        #auth-overlay { position: fixed; inset: 0; background: rgba(44, 62, 80, 0.95); z-index: 999; display: flex; align-items: center; justify-content: center; }
+        .auth-card { background: white; padding: 30px; border-radius: 12px; width: 300px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
+        .auth-card h2 { margin-top: 0; color: var(--primary); }
+        .status-msg { margin-top: 10px; font-size: 12px; min-height: 1.5em; color: #555; font-weight: bold; }
+       
+        /* Основной интерфейс */
+        .app-container { display: flex; height: 100%; }
+        .sidebar { width: 300px; background: white; padding: 20px; border-right: 1px solid #ddd; display: flex; flex-direction: column; overflow-y: auto; z-index: 10; }
+        .main-area { flex-grow: 1; position: relative; background: white; cursor: grab; }
+        .main-area:active { cursor: grabbing; }
+
+        input, select { width: 100%; padding: 10px; margin: 5px 0; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 5px; cursor: pointer; margin-top: 5px; font-weight: bold; }
+        button.danger { background: var(--error); margin-top: 20px; font-size: 0.8em; }
+        button.secondary { background: #95a5a6; }
+       
+        /* Стили дерева */
+        .node circle { fill: #fff; stroke: var(--primary); stroke-width: 3px; }
+        .node text { font: 12px sans-serif; font-weight: bold; }
+        .node .dates { font-size: 10px; fill: #7f8c8d; font-weight: normal; }
+        .link { fill: none; stroke: #ccc; stroke-width: 2px; }
+    </style>
+</head>
+<body>
+
+<div id="auth-overlay">
+    <div class="auth-card">
+        <h2>Sejire Вход</h2>
+        <input type="text" id="u" placeholder="Ваше Имя (Логин)">
+        <input type="password" id="p" placeholder="Ваш Пароль">
+        <button id="login-btn" onclick="attemptLogin()">Войти / Создать</button>
+        <div id="msg" class="status-msg">Введите данные</div>
+       
+        <div style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 10px;">
+            <p style="font-size: 10px; color: #999;">Если ничего не происходит:</p>
+            <button class="secondary" style="font-size: 10px; padding: 5px;" onclick="resetCache()">⚠️ Экстренный сброс</button>
+        </div>
+    </div>
+</div>
+
+<div class="app-container" id="app" style="filter: blur(5px);">
+    <div class="sidebar">
+        <h3>Добавить предка</h3>
+        <input type="text" id="name" placeholder="ФИО">
+        <div style="display: flex; gap: 5px;">
+            <input type="text" id="bYear" placeholder="Год рожд.">
+            <input type="text" id="dYear" placeholder="Год смерти">
+        </div>
+        <select id="role"><option value="Отец">Отец</option><option value="Мать">Мать</option></select>
+        <label style="font-size: 12px; margin-top: 10px; display: block;">Кому он родитель?</label>
+        <select id="child-select"><option value="me">Мне (Основание)</option></select>
+        <button onclick="saveData()">Добавить в дерево</button>
+       
+        <div style="margin-top: auto;">
+            <button class="secondary" onclick="downloadPNG()">📷 Скачать картинку</button>
+            <button class="danger" onclick="logout()">Выйти</button>
+        </div>
+    </div>
+   
+    <div class="main-area" id="canvas-container">
+        <svg id="canvas" width="100%" height="100%"></svg>
+    </div>
+</div>
+
+<script>
+    // Настройка GUN
+    const gun = Gun({
+        peers: ['https://gun-manhattan.herokuapp.com/gun', 'https://relay.peer.ooo/gun'],
+        localStorage: true
+    });
+    const user = gun.user().recall({storage: true});
+    let treeData = {};
+
+    // --- ЛОГИКА ВХОДА ---
+    function attemptLogin() {
+        const u = document.getElementById('u').value.trim();
+        const p = document.getElementById('p').value.trim();
+        const msg = document.getElementById('msg');
+        const btn = document.getElementById('login-btn');
+
+        if(!u || !p) return msg.innerText = "Заполните оба поля!";
+
+        btn.disabled = true;
+        msg.innerText = "Попытка входа...";
+
+        // 1. Сначала пробуем авторизоваться
+        user.auth(u, p, (ack) => {
+            if (ack.err) {
+                // Если ошибка авторизации, пробуем создать
+                console.log("Вход не удался, пробуем создать...", ack.err);
+                msg.innerText = "Пользователь не найден, создаем...";
+               
+                user.create(u, p, (createAck) => {
+                    if (createAck.err) {
+                        // КРИТИЧЕСКИЙ МОМЕНТ:
+                        if (createAck.err.toLowerCase().includes("already")) {
+                            msg.innerText = "❌ Ошибка: Неверный пароль!";
+                            msg.style.color = "red";
+                            alert("Пользователь с таким именем уже существует, но пароль не подошел. Попробуйте другой пароль или смените логин.");
+                        } else {
+                            msg.innerText = "Ошибка: " + createAck.err;
+                        }
+                        btn.disabled = false;
+                    } else {
+                        // Создали успешно -> входим
+                        msg.innerText = "Успешная регистрация! Входим...";
+                        user.auth(u, p);
+                    }
+                });
+            } else {
+                // Успешный вход
+                msg.innerText = "Вход выполнен!";
+                startApp();
+            }
+        });
+    }
+
+    // Если Gun сам вспомнил пользователя (авто-вход)
+    gun.on('auth', () => {
+        startApp();
+    });
+
+    function startApp() {
+        document.getElementById('auth-overlay').style.display = 'none';
+        document.getElementById('app').style.filter = 'none';
+       
+        // Загрузка данных
+        user.get('sejire_v5').map().on((data, id) => {
+            if (data) {
+                treeData[id] = { id, ...data };
+                updateUI();
+            }
+        });
+    }
+
+    // Экстренный сброс, если всё зависло
+    function resetCache() {
+        if(confirm("Это сбросит настройки входа (данные в сети останутся). Продолжить?")) {
+            localStorage.clear();
+            sessionStorage.clear();
+            location.reload();
+        }
+    }
+
+    function logout() {
+        user.leave();
+        location.reload();
+    }
+
+    // --- ЛОГИКА ДАННЫХ ---
+    function saveData() {
+        const name = document.getElementById('name').value;
+        if (!name) return alert("Введите имя!");
+
+        user.get('sejire_v5').get(Gun.text.random()).put({
+            name: name,
+            bYear: document.getElementById('bYear').value,
+            dYear: document.getElementById('dYear').value,
+            role: document.getElementById('role').value,
+            child: document.getElementById('child-select').value
+        });
+       
+        // Очистка полей
+        document.getElementById('name').value = '';
+        document.getElementById('bYear').value = '';
+        document.getElementById('dYear').value = '';
+    }
+
+    // --- ВИЗУАЛИЗАЦИЯ ---
+    const svg = d3.select("#canvas");
+    const g = svg.append("g");
+   
+    // Зум и панорамирование
+    const zoom = d3.zoom().on("zoom", (e) => g.attr("transform", e.transform));
+    svg.call(zoom);
+   
+    // Начальная позиция
+    svg.call(zoom.transform, d3.zoomIdentity.translate(window.innerWidth/2, 50).scale(0.8));
+
+    function updateUI() {
+        const select = document.getElementById('child-select');
+        const currentVal = select.value;
+        select.innerHTML = '<option value="me">Мне (Основание)</option>';
+       
+        Object.values(treeData).forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            opt.innerText = p.name;
+            select.appendChild(opt);
+        });
+        select.value = currentVal; // Сохраняем выбор
+
+        renderTree();
+    }
+
+    function renderTree() {
+        // Группировка данных
+        const nest = (id) => Object.values(treeData)
+            .filter(d => d.child === id)
+            .map(d => ({ ...d, children: nest(d.id) }));
+
+        const data = { name: "Я", id: "me", children: nest("me") };
+        const root = d3.hierarchy(data);
+        const treeLayout = d3.tree().nodeSize([180, 140]); // Расстояние между узлами
+        treeLayout(root);
+
+        g.selectAll("*").remove(); // Очистка
+
+        // Рисуем связи
+        g.selectAll(".link")
+            .data(root.links())
+            .enter().append("path")
+            .attr("class", "link")
+            .attr("d", d3.linkVertical().x(d => d.x).y(d => d.y));
+
+        // Рисуем узлы
+        const node = g.selectAll(".node")
+            .data(root.descendants())
+            .enter().append("g")
+            .attr("class", "node")
+            .attr("transform", d => `translate(${d.x},${d.y})`);
+
+        node.append("circle").attr("r", 6);
+
+        // Текст имени (с переносом)
+        node.append("text")
+            .attr("dy", "1.6em")
+            .attr("text-anchor", "middle")
+            .each(function(d) {
+                const parts = d.data.name.split(" ");
+                d3.select(this).selectAll("tspan")
+                    .data(parts).enter().append("tspan")
+                    .attr("x", 0)
+                    .attr("dy", (d, i) => i === 0 ? 0 : "1.2em")
+                    .text(d => d);
+            });
+           
+        // Даты
+        node.append("text")
+            .attr("class", "dates")
+            .attr("dy", "-1.5em")
+            .attr("text-anchor", "middle")
+            .text(d => (d.data.bYear || d.data.dYear) ? `${d.data.bYear || '?'} - ${d.data.dYear || '?'}` : "");
+    }
+
+    function downloadPNG() {
+        const svgEl = document.getElementById("canvas");
+        const serializer = new XMLSerializer();
+        const source = serializer.serializeToString(svgEl);
+       
+        const canvas = document.createElement("canvas");
+        const rect = svgEl.getBoundingClientRect();
+        canvas.width = rect.width * 2;
+        canvas.height = rect.height * 2;
+       
+        const ctx = canvas.getContext("2d");
+        ctx.scale(2, 2);
+        ctx.fillStyle = "white";
+        ctx.fillRect(0, 0, rect.width, rect.height);
+       
+        const img = new Image();
+        img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(source)));
+       
+        img.onload = function() {
+            ctx.drawImage(img, 0, 0);
+            const a = document.createElement("a");
+            a.download = "sejire.png";
+            a.href = canvas.toDataURL("image/png");
+            a.click();
+        }
+    }
+</script>
+
+</body>
+</html>
+
+
+
