@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sejire Blockchain dApp</title>
+    <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gun/sea.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        :root { --primary: #27ae60; --dark: #2c3e50; --light: #f4f7f6; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--light); margin: 0; display: flex; height: 100vh; overflow: hidden; }
+       
+        /* Авторизация */
+        #auth-overlay { position: fixed; inset: 0; background: var(--dark); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+        .auth-card { background: white; padding: 40px; border-radius: 15px; width: 320px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+       
+        /* Интерфейс */
+        .sidebar { width: 320px; background: white; padding: 20px; box-shadow: 2px 0 10px rgba(0,0,0,0.1); z-index: 10; overflow-y: auto; }
+        #tree-area { flex-grow: 1; position: relative; background: #fff; cursor: grab; }
+       
+        input, select { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        button:disabled { background: #95a5a6; cursor: not-allowed; }
+
+        .node circle { fill: #fff; stroke: var(--primary); stroke-width: 3px; }
+        .node text { font-size: 12px; font-weight: 600; }
+        .link { fill: none; stroke: #cbd5e0; stroke-width: 2px; }
+
+        #login-msg { font-size: 12px; color: #e67e22; margin-top: 10px; min-height: 15px; }
+    </style>
+</head>
+<body>
+
+<div id="auth-overlay">
+    <div class="auth-card">
+        <h1 style="color:var(--primary); margin-bottom:10px;">Sejire</h1>
+        <p style="font-size:14px; color:#666;">Децентрализованное хранилище</p>
+        <input type="text" id="u" placeholder="Логин (alias)">
+        <input type="password" id="p" placeholder="Пароль (passphrase)">
+        <button id="login-btn" onclick="login()">Войти или Создать</button>
+        <div id="login-msg"></div>
+    </div>
+</div>
+
+<div class="sidebar">
+    <h3>Новый предок</h3>
+    <input type="text" id="name" placeholder="ФИО">
+    <div style="display:flex; gap:5px;">
+        <input type="text" id="bYear" placeholder="Год рожд.">
+        <input type="text" id="dYear" placeholder="Год смерти">
+    </div>
+    <select id="role"><option value="Отец">Отец</option><option value="Мать">Мать</option></select>
+    <select id="child-select"><option value="me">Для меня</option></select>
+    <button onclick="saveMember()">Добавить в блокчейн</button>
+   
+    <hr style="margin:20px 0; border:0; border-top:1px solid #eee;">
+    <button style="background:#3498db" onclick="downloadPNG()">📷 Сохранить как фото</button>
+    <button style="background:#e74c3c" onclick="clearAll()">⚠️ Удалить дерево</button>
+    <button style="background:#95a5a6" onclick="user.leave(); location.reload();">Выход</button>
+</div>
+
+<div id="tree-area">
+    <svg id="canvas" width="100%" height="100%"></svg>
+</div>
+
+<script>
+    // 1. Инициализация с резервными узлами
+    const gun = Gun({
+        peers: [
+            'https://gun-manhattan.herokuapp.com/gun',
+            'https://relay.peer.ooo/gun'
+        ],
+        localStorage: true // Важно для работы без сети
+    });
+    const user = gun.user().recall({storage: true});
+    let treeData = {};
+
+    // 2. Улучшенная логика входа
+    async function login() {
+        const alias = document.getElementById('u').value;
+        const pass = document.getElementById('p').value;
+        const msg = document.getElementById('login-msg');
+        const btn = document.getElementById('login-btn');
+
+        if (!alias || !pass) return alert("Введите данные");
+
+        btn.disabled = true;
+        msg.innerText = "Связь с блокчейн-узлами...";
+
+        // Попытка входа
+        user.auth(alias, pass, (ack) => {
+            if (ack.err) {
+                msg.innerText = "Создание нового защищенного аккаунта...";
+                user.create(alias, pass, (reg) => {
+                    if (reg.err) {
+                        msg.innerText = "Ошибка: " + reg.err;
+                        btn.disabled = false;
+                    } else {
+                        // После создания входим автоматически
+                        user.auth(alias, pass, (final) => {
+                            if (!final.err) location.reload();
+                        });
+                    }
+                });
+            } else {
+                msg.innerText = "Успешный вход!";
+                location.reload();
+            }
+        });
+
+        // Тайм-аут на случай если узлы совсем не отвечают
+        setTimeout(() => {
+            if (btn.disabled && !user.is) {
+                msg.innerText = "Сеть тормозит. Пробуем войти локально...";
+                // В GunDB данные могут быть уже в localStorage
+                if (user.is) location.reload();
+                btn.disabled = false;
+            }
+        }, 8000);
+    }
+
+    // 3. Загрузка данных после входа
+    if (user.is) {
+        document.getElementById('auth-overlay').style.display = 'none';
+       
+        // Слушаем данные из графа
+        user.get('sejire_final_v1').map().on((data, id) => {
+            if (data) {
+                treeData[id] = {id, ...data};
+                renderUI();
+            }
+        });
+    }
+
+    function saveMember() {
+        const name = document.getElementById('name').value;
+        if (!name) return;
+       
+        user.get('sejire_final_v1').get(Gun.text.random()).put({
+            name,
+            bYear: document.getElementById('bYear').value,
+            dYear: document.getElementById('dYear').value,
+            role: document.getElementById('role').value,
+            child: document.getElementById('child-select').value
+        });
+        document.getElementById('name').value = '';
+    }
+
+    function renderUI() {
+        // Обновляем список детей
+        const select = document.getElementById('child-select');
+        select.innerHTML = '<option value="me">Для меня</option>';
+        Object.values(treeData).forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id; opt.innerText = p.name;
+            select.appendChild(opt);
+        });
+
+        // Строим дерево D3
+        const nest = (id) => Object.values(treeData).filter(d => d.child === id).map(d => ({...d, children: nest(d.id)}));
+        const data = { name: "Я", id: "me", children: nest("me") };
+       
+        const root = d3.hierarchy(data);
+        const layout = d3.tree().nodeSize([160, 120]);
+        layout(root);
+
+        const svg = d3.select("#canvas"), g = svg.select("g").empty() ? svg.append("g") : svg.select("g");
+        g.selectAll("*").remove();
+
+        // Центрирование
+        g.attr("transform", `translate(${window.innerWidth/2 - 100}, 100)`);
+
+        g.selectAll(".link").data(root.links()).enter().append("path").attr("class", "link")
+            .attr("d", d3.linkVertical().x(d => d.x).y(d => d.y));
+
+        const node = g.selectAll(".node").data(root.descendants()).enter().append("g")
+            .attr("class", "node").attr("transform", d => `translate(${d.x},${d.y})`);
+
+        node.append("circle").attr("r", 6);
+        node.append("text").attr("dy", "1.5em").attr("text-anchor", "middle").text(d => d.data.name);
+        node.append("text").attr("dy", "-1.2em").attr("text-anchor", "middle").style("fill", "#999").style("font-size", "10px")
+            .text(d => d.data.bYear ? `${d.data.bYear}-${d.data.dYear||'?'}` : "");
+    }
+
+    function downloadPNG() {
+        const svgE = document.getElementById('canvas');
+        const serializer = new XMLSerializer();
+        const svgString = serializer.serializeToString(svgE);
+        const canvas = document.createElement('canvas');
+        canvas.width = svgE.clientWidth * 2;
+        canvas.height = svgE.clientHeight * 2;
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgString)));
+        img.onload = () => {
+            ctx.fillStyle = "white";
+            ctx.fillRect(0,0,canvas.width,canvas.height);
+            ctx.scale(2,2); ctx.drawImage(img, 0, 0);
+            const a = document.createElement('a');
+            a.download = "tree.png"; a.href = canvas.toDataURL(); a.click();
+        };
+    }
+
+    function clearAll() {
+        if(confirm("Удалить всё?")) {
+            user.get('sejire_final_v1').map().once((d, i) => user.get('sejire_final_v1').get(i).put(null));
+            setTimeout(()=>location.reload(), 500);
+        }
+    }
+</script>
+
+</body>
+</html>
