@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sejire - Древо предков</title>
+   
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gun/0.2020.1239/gun.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gun/0.2020.1239/sea.min.js"></script>
+
+    <style>
+        :root { --primary: #2c3e50; --accent: #27ae60; --error: #e74c3c; --bg: #f8f9fa; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); color: var(--primary); margin: 0; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+       
+        /* Индикатор сети */
+        .network-status { font-size: 0.8em; margin-bottom: 20px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        #status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--error); transition: 0.3s; }
+       
+        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); text-align: center; }
+        input { display: block; width: calc(100% - 24px); margin: 10px auto; padding: 12px; border: 1px solid #ddd; border-radius: 6px; }
+        button { background: var(--accent); color: white; border: none; padding: 12px 24px; cursor: pointer; border-radius: 6px; font-weight: bold; width: 100%; }
+        button:disabled { background: #ccc; }
+       
+        #app { display: none; margin-top: 20px; }
+        .node { border-left: 4px solid var(--accent); background: white; margin: 10px 0; padding: 15px; text-align: left; border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .logout-btn { background: none; color: var(--error); border: 1px solid var(--error); margin-top: 20px; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="network-status">
+        <div id="status-dot"></div>
+        <span id="status-text">Поиск сети...</span>
+    </div>
+
+    <div id="auth-section" class="card">
+        <h1>Sejire</h1>
+        <p>Децентрализованное древо предков</p>
+        <input type="text" id="user" placeholder="Логин">
+        <input type="password" id="pass" placeholder="Пароль">
+        <button id="auth-btn" onclick="login()">Войти / Создать</button>
+        <p id="auth-msg" style="font-size: 0.85em; color: #666;"></p>
+    </div>
+
+    <div id="app">
+        <div class="card">
+            <h3>Добавить предка</h3>
+            <input type="text" id="ancestor-name" placeholder="ФИО предка">
+            <button onclick="add()">Сохранить в дерево</button>
+        </div>
+       
+        <div id="tree-list"></div>
+        <button class="logout-btn" onclick="logout()">Выйти</button>
+    </div>
+</div>
+
+<script>
+    // 1. Настройка сети
+    const peers = [
+        'https://gun-manhattan.herokuapp.com/gun',
+        'https://relay.peer.ooo/gun',
+        'https://gunjs.herokuapp.com/gun'
+    ];
+   
+    const gun = Gun({ peers: peers, localStorage: true });
+    const user = gun.user().recall({storage: true});
+
+    // Индикатор сети
+    setInterval(() => {
+        const mesh = gun.back('opt.mesh');
+        const count = Object.keys(gun.back('opt.peers')).length;
+        const dot = document.getElementById('status-dot');
+        const text = document.getElementById('status-text');
+       
+        if (count > 0) {
+            dot.style.background = 'var(--accent)';
+            text.innerText = `Сеть активна (Узлов: ${count})`;
+        } else {
+            dot.style.background = 'var(--error)';
+            text.innerText = 'Поиск узлов...';
+        }
+    }, 2000);
+
+    // 2. Логика входа
+    function login() {
+        const alias = document.getElementById('user').value;
+        const pass = document.getElementById('pass').value;
+        const msg = document.getElementById('auth-msg');
+        const btn = document.getElementById('auth-btn');
+
+        if(!alias || !pass) return alert("Заполните поля");
+
+        btn.disabled = true;
+        msg.innerText = "Авторизация в P2P сети...";
+
+        user.auth(alias, pass, ack => {
+            if (ack.err) {
+                msg.innerText = "Создание нового профиля...";
+                user.create(alias, pass, createAck => {
+                    if (createAck.err) {
+                        msg.innerText = "Ошибка: " + createAck.err;
+                        btn.disabled = false;
+                    } else {
+                        user.auth(alias, pass, a => { if(!a.err) startApp(); });
+                    }
+                });
+            } else {
+                startApp();
+            }
+        });
+    }
+
+    function startApp() {
+        document.getElementById('auth-section').style.display = 'none';
+        document.getElementById('app').style.display = 'block';
+        loadData();
+    }
+
+    // 3. Работа с данными
+    function add() {
+        const nameInput = document.getElementById('ancestor-name');
+        if(!nameInput.value) return;
+       
+        // Ключ - метка времени, значение - имя
+        user.get('sejire-nodes').get(Date.now()).put({ name: nameInput.value });
+        nameInput.value = '';
+    }
+
+    function loadData() {
+        const list = document.getElementById('tree-list');
+        user.get('sejire-nodes').map().on((data, id) => {
+            if(!data || !data.name || document.getElementById(id)) return;
+            const div = document.createElement('div');
+            div.id = id;
+            div.className = 'node';
+            div.innerHTML = `<strong>Предок:</strong><br>${data.name}`;
+            list.prepend(div); // Новые сверху
+        });
+    }
+
+    function logout() {
+        user.leave();
+        location.reload();
+    }
+
+    // Если уже залогинены
+    if (user.is) startApp();
+</script>
+
+</body>
+</html>
