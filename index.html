@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>SEJIRE dApp</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gun/0.2020.1239/gun.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gun/0.2020.1239/sea.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #f0f2f5; text-align: center; padding: 20px; }
+        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: inline-block; min-width: 300px; }
+        input { display: block; width: 90%; margin: 10px auto; padding: 10px; }
+        button { background: #27ae60; color: white; border: none; padding: 10px 20px; cursor: pointer; border-radius: 5px; }
+        #app { display: none; }
+        .node { border: 2px solid #27ae60; margin: 10px; padding: 10px; background: white; display: inline-block; }
+    </style>
+</head>
+<body>
+
+    <div id="auth-section" class="card">
+        <h2>🧬 SEJIRE Блокчейн</h2>
+        <input type="text" id="user" placeholder="Логин">
+        <input type="password" id="pass" placeholder="Пароль">
+        <button onclick="login()">Войти / Создать</button>
+        <p id="status"></p>
+    </div>
+
+    <div id="app">
+        <div class="card">
+            <h3>Добавить предка</h3>
+            <input type="text" id="name" placeholder="ФИО предка">
+            <button onclick="add()">Записать в блокчейн</button>
+        </div>
+        <div id="tree"></div>
+        <br>
+        <button onclick="location.reload()" style="background:#e74c3c">Выйти</button>
+    </div>
+
+<script>
+    // Инициализация
+    const gun = Gun(['https://gun-manhattan.herokuapp.com/gun']);
+    const user = gun.user();
+
+    function login() {
+        const u = document.getElementById('user').value;
+        const p = document.getElementById('pass').value;
+        document.getElementById('status').innerText = "Связь с узлами...";
+
+        user.auth(u, p, ack => {
+            if (ack.err) {
+                user.create(u, p, res => login());
+            } else {
+                start();
+            }
+        });
+    }
+
+    function start() {
+        document.getElementById('auth-section').style.display = 'none';
+        document.getElementById('app').style.display = 'block';
+        load();
+    }
+
+    function add() {
+        const n = document.getElementById('name').value;
+        if(!n) return;
+        user.get('tree').set({name: n});
+        document.getElementById('name').value = '';
+    }
+
+    function load() {
+        user.get('tree').map().on((data, id) => {
+            if(!data) return;
+            const div = document.createElement('div');
+            div.className = 'node';
+            div.innerText = data.name;
+            document.getElementById('tree').appendChild(div);
+        });
+    }
+</script>
+</body>
+</html>
